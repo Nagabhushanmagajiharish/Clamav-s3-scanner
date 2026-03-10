@@ -1,0 +1,9 @@
+aws_region           = "eu-west-1"
+environment          = "dev"
+resource_prefix      = "bushan"
+cidr_block           = "10.0.0.0/20"
+scanner_image        = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/clamav-s3-scanner:latest"
+scanner_cpu          = 1024
+scanner_memory       = 2048
+desired_count        = 1
+delete_source_object = false

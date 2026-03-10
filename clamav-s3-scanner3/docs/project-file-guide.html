@@ -1,0 +1,229 @@
+﻿<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <title>ClamAV S3 Scanner Project Guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f1ea;
+      --paper: #fffdf8;
+      --ink: #1f2933;
+      --muted: #5b6670;
+      --line: #d6d0c4;
+      --accent: #8f3b2f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #efe8da 0%, #f8f5ee 100%);
+      color: var(--ink);
+      font: 15px/1.55 Georgia, 'Times New Roman', serif;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 44px 48px 72px;
+    }
+    h1, h2, h3 {
+      font-family: Cambria, Georgia, serif;
+      line-height: 1.15;
+      margin: 0 0 12px;
+      color: #15202b;
+    }
+    h1 {
+      font-size: 34px;
+      margin-bottom: 10px;
+    }
+    h2 {
+      font-size: 23px;
+      margin-top: 34px;
+      padding-top: 12px;
+      border-top: 2px solid var(--line);
+    }
+    p {
+      margin: 0 0 12px;
+    }
+    .lead {
+      color: var(--muted);
+      font-size: 17px;
+      max-width: 60em;
+    }
+    .card {
+      background: var(--paper);
+      border: 1px solid rgba(92, 74, 50, 0.18);
+      border-radius: 14px;
+      padding: 18px 20px;
+      box-shadow: 0 8px 24px rgba(64, 45, 20, 0.06);
+      margin: 18px 0 24px;
+    }
+    ol, ul {
+      margin: 0 0 14px 22px;
+      padding: 0;
+    }
+    li { margin: 0 0 8px; }
+    code {
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 0.93em;
+      background: #f1ece2;
+      padding: 0.08em 0.3em;
+      border-radius: 4px;
+    }
+    .path-list li {
+      margin-bottom: 10px;
+    }
+    .note {
+      border-left: 4px solid var(--accent);
+      padding-left: 14px;
+      color: var(--muted);
+      margin: 18px 0;
+    }
+    @page {
+      size: A4;
+      margin: 18mm 14mm 18mm;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ClamAV S3 Scanner Project Guide</h1>
+    <p class='lead'>This PDF explains the whole repository in beginner-friendly language. It covers what the project does, how the folders fit together, and what each tracked file is responsible for.</p>
+
+    <section>
+      <h2>What The Project Does</h2>
+      <div class='card'>
+        <p>This repository builds an AWS upload pipeline that scans files for viruses with ClamAV.</p>
+        <ol>
+          <li>A client calls an API to ask for a temporary upload URL.</li>
+          <li>A Lambda function creates a presigned S3 upload URL.</li>
+          <li>The client uploads a file to an S3 bucket.</li>
+          <li>S3 sends an event to an SQS queue.</li>
+          <li>An ECS Fargate container reads the queue message.</li>
+          <li>The container downloads the file and runs ClamAV.</li>
+          <li>The file is copied into either a clean bucket or an infected bucket.</li>
+          <li>The original object is tagged, and can optionally be deleted.</li>
+        </ol>
+      </div>
+      <p class='note'>Important structure note: <code>bussness_severes/</code> contains deployable Terraform stacks, <code>terraform_modules/</code> contains reusable infrastructure modules, and <code>containers/</code> contains the scanner application source code. There is no root <code>main.tf</code>, so Terraform is intended to run from the stack folders.</p>
+    </section>
+
+    <section>
+      <h2>Root And Environment Files</h2>
+      <ul class='path-list'>
+        <li><code>.gitignore</code>: Empty. Git is not currently ignoring Terraform state, plans, or secrets.</li>
+        <li><code>terraform.tfvars</code>: Example root variable file with <code>aws_region</code>, <code>environment</code>, and <code>resource_prefix</code>. It is a sample input file, not the main deployment entry point.</li>
+        <li><code>environments/dev-bushan.tfvar</code>: Environment-specific values for <code>environment</code> and <code>resource_prefix</code>. Because the extension is <code>.tfvar</code> instead of <code>.tfvars</code>, Terraform would normally need it passed explicitly with <code>-var-file</code>.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Deployable Terraform Stacks</h2>
+      <h3>bussness_severes/clamav-s3-scanner</h3>
+      <ul class='path-list'>
+        <li><code>bussness_severes/clamav-s3-scanner/provider.tf</code>: Declares the AWS provider and pins it to the <code>hashicorp/aws</code> 5.x line.</li>
+        <li><code>bussness_severes/clamav-s3-scanner/variable.tf</code>: Defines all inputs for the full solution, including region, environment, naming prefix, VPC CIDR, scanner image, ECS CPU and memory, task count, and whether the original uploaded file should be deleted.</li>
+        <li><code>bussness_severes/clamav-s3-scanner/main.tf</code>: Main infrastructure entry point. It wires together four modules: upload API, VPC, ECS cluster, and scanner service. This is the best first file to read.</li>
+        <li><code>bussness_severes/clamav-s3-scanner/output.tf</code>: Exports the upload API URL, upload bucket name, clean bucket name, infected bucket name, and scan queue URL after deployment.</li>
+        <li><code>bussness_severes/clamav-s3-scanner/terraform.tfvars.example</code>: Example values for the full stack, including the required <code>scanner_image</code> setting.</li>
+      </ul>
+
+      <h3>bussness_severes/api-gateway-s3-upload</h3>
+      <ul class='path-list'>
+        <li><code>bussness_severes/api-gateway-s3-upload/provider.tf</code>: AWS provider declaration for the smaller upload-only stack.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/variable.tf</code>: Defines inputs like environment, resource prefix, region, and CIDR block. Not all of those values are used by the stack as written.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/main.tf</code>: Deploys only the upload API module and hardcodes a region and resource prefix. It looks like a smaller or older stack focused only on presigned upload URLs.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/output.tf</code>: Empty placeholder file with no Terraform outputs.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/terraform.tfstate</code>: Generated Terraform state snapshot for that stack.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/terraform.tfstate.backup</code>: Backup copy of that same state snapshot.</li>
+      </ul>
+
+      <h3>bussness_severes/gitlab_runners</h3>
+      <ul class='path-list'>
+        <li><code>bussness_severes/gitlab_runners/main.tf</code>: Partial or experimental stack. It currently creates only the VPC module, while the ECS cluster section is commented out.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Reusable Terraform Modules</h2>
+      <h3>terraform_modules/api-s3-connector</h3>
+      <ul class='path-list'>
+        <li><code>terraform_modules/api-s3-connector/variable.tf</code>: Module input definition. The main value here is <code>resource_prefix</code>.</li>
+        <li><code>terraform_modules/api-s3-connector/data.tf</code>: Reads the current AWS region so it can be passed into Lambda.</li>
+        <li><code>terraform_modules/api-s3-connector/main.tf</code>: Creates the upload S3 bucket, configures browser CORS, creates the Lambda IAM role and policy, zips the Lambda source, deploys the Lambda function, and grants API Gateway permission to invoke it.</li>
+        <li><code>terraform_modules/api-s3-connector/api-gateway.tf</code>: Creates an HTTP API Gateway, integrates it with Lambda using AWS proxy mode, adds route <code>GET /upload-url</code>, and auto-deploys the default stage.</li>
+        <li><code>terraform_modules/api-s3-connector/output.tf</code>: Exports the upload bucket name and ARN, API endpoint, and Lambda function name.</li>
+        <li><code>terraform_modules/api-s3-connector/lambda_function.py</code>: Python Lambda code. It reads a <code>filename</code> query parameter, sanitizes it with <code>os.path.basename</code>, prefixes it with <code>uploads/</code>, generates a presigned <code>put_object</code> URL, and returns JSON containing the upload URL and object key.</li>
+        <li><code>terraform_modules/api-s3-connector/function.zip</code>: Generated Lambda deployment package built from <code>lambda_function.py</code>.</li>
+        <li><code>terraform_modules/api-s3-connector/response.json</code>: Saved example of a successful Lambda response containing a temporary upload URL and key.</li>
+        <li><code>terraform_modules/api-s3-connector/hello.txt</code>: Tiny sample file, likely kept for manual upload tests.</li>
+        <li><code>terraform_modules/api-s3-connector/terraform.tfstate</code>: Generated Terraform state for this module's standalone deployment.</li>
+        <li><code>terraform_modules/api-s3-connector/terraform.tfstate.backup</code>: Backup state snapshot for the same module.</li>
+      </ul>
+
+      <h3>terraform_modules/clamav-s3-scanner</h3>
+      <ul class='path-list'>
+        <li><code>terraform_modules/clamav-s3-scanner/variable.tf</code>: Defines the scanner module inputs, including source bucket, network IDs, ECS cluster ARN, scanner image, task sizing, object prefix, and delete behavior.</li>
+        <li><code>terraform_modules/clamav-s3-scanner/main.tf</code>: Core infrastructure module. It creates the clean and infected buckets, public-access blocks, scan queue, dead-letter queue, queue policy, source bucket notification, log group, security group, ECS IAM roles, ECS task definition, and ECS service.</li>
+        <li><code>terraform_modules/clamav-s3-scanner/output.tf</code>: Exports the clean and infected bucket names, scan queue URL and ARN, ECS service name, and CloudWatch log group name.</li>
+      </ul>
+      <p>The scanner module also contains the important policy logic that lets S3 send events to SQS and lets the ECS task read from SQS and move objects among the source, clean, and infected buckets.</p>
+
+      <h3>terraform_modules/ecs_cluster</h3>
+      <ul class='path-list'>
+        <li><code>terraform_modules/ecs_cluster/variable.tf</code>: Inputs for the ECS cluster module: cluster name, container insights flag, and tags.</li>
+        <li><code>terraform_modules/ecs_cluster/main.tf</code>: Creates one ECS cluster and conditionally enables CloudWatch Container Insights.</li>
+        <li><code>terraform_modules/ecs_cluster/output.tf</code>: Exports the cluster ARN and cluster name.</li>
+        <li><code>terraform_modules/ecs_cluster/terraform.tfstate</code>: Generated Terraform state for this module.</li>
+      </ul>
+
+      <h3>terraform_modules/vpc</h3>
+      <ul class='path-list'>
+        <li><code>terraform_modules/vpc/variable.tf</code>: Inputs for the VPC module: resource prefix, environment, and VPC CIDR block.</li>
+        <li><code>terraform_modules/vpc/site.tf</code>: Helper logic for the network. It reads available availability zones, keeps the first two, calculates subnet CIDRs with <code>cidrsubnet</code>, and builds a shared name prefix.</li>
+        <li><code>terraform_modules/vpc/main.tf</code>: Creates the VPC, two public subnets, an internet gateway, a public route table, a default internet route, and route-table associations.</li>
+        <li><code>terraform_modules/vpc/output.tf</code>: Exports the VPC ID and public subnet IDs.</li>
+        <li><code>terraform_modules/vpc/terraform.tfstate</code>: Generated Terraform state for the VPC module.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Container Application</h2>
+      <ul class='path-list'>
+        <li><code>containers/clamav-s3-scanner/Dockerfile</code>: Builds the scanner image from <code>python:3.11-slim-bookworm</code>, installs ClamAV packages, installs Python dependencies, copies the app files, prepares local directories, and sets the container entrypoint.</li>
+        <li><code>containers/clamav-s3-scanner/requirements.txt</code>: Python dependency list. It currently contains only <code>boto3</code>, the AWS SDK used to talk to S3 and SQS.</li>
+        <li><code>containers/clamav-s3-scanner/entrypoint.sh</code>: Startup shell script. It runs <code>freshclam</code> to refresh virus definitions, prints a warning if that fails, then starts the Python worker.</li>
+        <li><code>containers/clamav-s3-scanner/scanner.py</code>: Main runtime worker. It reads configuration from environment variables, refreshes virus definitions on a timer, polls SQS with long polling, parses the embedded S3 event records, downloads the file, runs <code>clamscan</code>, copies the object into the clean or infected bucket, tags the source object, optionally deletes the original, and deletes the queue message only after successful processing.</li>
+      </ul>
+      <div class='card'>
+        <p><strong>Why <code>scanner.py</code> matters most:</strong> it is the part of the system that actually decides whether a file is clean or infected. Terraform creates the AWS plumbing, but this file is the runtime engine.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Generated Artifacts And State Files</h2>
+      <p>These files are important for deployment history, but they are not handwritten application logic and usually should not be edited manually.</p>
+      <ul class='path-list'>
+        <li><code>terraform_modules/api-s3-connector/function.zip</code>: Generated Lambda zip package.</li>
+        <li><code>terraform_modules/api-s3-connector/terraform.tfstate</code>: State snapshot for the upload API module.</li>
+        <li><code>terraform_modules/api-s3-connector/terraform.tfstate.backup</code>: Backup snapshot for that module.</li>
+        <li><code>terraform_modules/ecs_cluster/terraform.tfstate</code>: State snapshot for the ECS cluster module.</li>
+        <li><code>terraform_modules/vpc/terraform.tfstate</code>: State snapshot for the VPC module.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/terraform.tfstate</code>: State snapshot for the upload-only stack.</li>
+        <li><code>bussness_severes/api-gateway-s3-upload/terraform.tfstate.backup</code>: Backup of that stack state.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Best Reading Order For A Beginner</h2>
+      <ol>
+        <li><code>bussness_severes/clamav-s3-scanner/main.tf</code>: shows how the full system is assembled.</li>
+        <li><code>terraform_modules/api-s3-connector/main.tf</code>: shows how uploads are enabled.</li>
+        <li><code>terraform_modules/clamav-s3-scanner/main.tf</code>: shows how scan jobs, buckets, IAM, and ECS are wired together.</li>
+        <li><code>terraform_modules/api-s3-connector/lambda_function.py</code>: shows how presigned upload URLs are generated.</li>
+        <li><code>containers/clamav-s3-scanner/scanner.py</code>: shows how the actual virus scan worker behaves.</li>
+      </ol>
+      <p>If those five files make sense, the rest of the repository will become much easier to understand.</p>
+    </section>
+  </main>
+</body>
+</html>
